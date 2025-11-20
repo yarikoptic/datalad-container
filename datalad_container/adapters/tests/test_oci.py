@@ -6,6 +6,8 @@ this.
 """
 
 import json
+import os
+from unittest.mock import patch
 
 import pytest
 
@@ -123,3 +125,109 @@ def test_store_and_get_annotation(path=None):
         "foo")
     eq_(oci._get_annotation(path, "org.opencontainers.image.ref.name"),
         "1.32")
+
+
+# Runtime detection tests
+
+
+def test_detect_oci_runtime_no_runtimes():
+    """Test runtime detection when no runtimes are available."""
+    with patch('datalad_container.adapters.oci.which', return_value=None):
+        result = oci.detect_oci_runtime()
+        eq_(result, None)
+
+
+def test_detect_oci_runtime_finds_apptainer():
+    """Test runtime detection finds apptainer first."""
+    def mock_which(cmd):
+        if cmd == "apptainer":
+            return "/usr/bin/apptainer"
+        return None
+
+    with patch('datalad_container.adapters.oci.which', side_effect=mock_which):
+        result = oci.detect_oci_runtime()
+        eq_(result, ("apptainer", "/usr/bin/apptainer"))
+
+
+def test_detect_oci_runtime_order():
+    """Test runtime detection follows correct priority order."""
+    def mock_which(cmd):
+        # Only docker available
+        if cmd == "docker":
+            return "/usr/bin/docker"
+        return None
+
+    with patch('datalad_container.adapters.oci.which', side_effect=mock_which):
+        result = oci.detect_oci_runtime()
+        eq_(result, ("docker", "/usr/bin/docker"))
+
+    def mock_which_singularity(cmd):
+        # Only singularity available
+        if cmd == "singularity":
+            return "/usr/bin/singularity"
+        return None
+
+    with patch('datalad_container.adapters.oci.which', side_effect=mock_which_singularity):
+        result = oci.detect_oci_runtime()
+        eq_(result, ("singularity", "/usr/bin/singularity"))
+
+
+def test_get_oci_runtime_auto():
+    """Test get_oci_runtime with auto mode."""
+    def mock_which(cmd):
+        if cmd == "docker":
+            return "/usr/bin/docker"
+        return None
+
+    with patch('datalad_container.adapters.oci.which', side_effect=mock_which):
+        result = oci.get_oci_runtime(dataset_path=None)
+        eq_(result, ("docker", "/usr/bin/docker"))
+
+
+def test_get_oci_runtime_no_runtime_available():
+    """Test get_oci_runtime raises when no runtime available."""
+    with patch('datalad_container.adapters.oci.which', return_value=None):
+        with assert_raises(RuntimeError) as cm:
+            oci.get_oci_runtime(dataset_path=None)
+        assert "No OCI runtime found" in str(cm.value)
+
+
+def test_get_oci_runtime_specific():
+    """Test get_oci_runtime with specific runtime configured."""
+    def mock_which(cmd):
+        if cmd == "podman":
+            return "/usr/bin/podman"
+        return None
+
+    env = {"DATALAD_CONTAINERS_RUN_OCI_RUNTIME": "podman"}
+    with patch('datalad_container.adapters.oci.which', side_effect=mock_which):
+        with patch.dict(os.environ, env):
+            result = oci.get_oci_runtime(dataset_path=None)
+            eq_(result, ("podman", "/usr/bin/podman"))
+
+
+def test_get_oci_runtime_not_found():
+    """Test get_oci_runtime raises when configured runtime not found."""
+    env = {"DATALAD_CONTAINERS_RUN_OCI_RUNTIME": "podman"}
+    with patch('datalad_container.adapters.oci.which', return_value=None):
+        with patch.dict(os.environ, env):
+            with assert_raises(RuntimeError) as cm:
+                oci.get_oci_runtime(dataset_path=None)
+            assert "not found in PATH" in str(cm.value)
+
+
+def test_get_oci_runtime_precedence():
+    """Test config precedence: env var > dataset > global."""
+    def mock_which(cmd):
+        # Both podman and docker available
+        if cmd in ["podman", "docker"]:
+            return f"/usr/bin/{cmd}"
+        return None
+
+    # Set environment variable - should take precedence
+    env = {"DATALAD_CONTAINERS_RUN_OCI_RUNTIME": "podman"}
+    with patch('datalad_container.adapters.oci.which', side_effect=mock_which):
+        with patch.dict(os.environ, env):
+            # Even with dataset path provided, env var wins
+            result = oci.get_oci_runtime(dataset_path="/some/path")
+            eq_(result, ("podman", "/usr/bin/podman"))

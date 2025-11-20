@@ -362,6 +362,10 @@ class ContainersAdd(Interface):
                 "{}.cmdexec".format(cfgbasevar),
                 call_fmt,
                 force=True)
+        # TODO: Add support for per-container runtime override
+        # This would allow users to specify a specific runtime for a container:
+        # ds.config.set("{}.runtime".format(cfgbasevar), runtime)
+        # This would override the global datalad.containers-run.oci-runtime setting
         # --extra-input sanity check
         # TODO: might also want to do that for --call-fmt above?
         extra_input_placeholders = dict(img_dirpath="", img_dspath="")

@@ -4,10 +4,14 @@ This adapter uses Skopeo to save a Docker image (or any source that Skopeo
 supports) to a local directory that's compliant with the "Open Container Image
 Layout Specification" and can be tracked as objects in a DataLad dataset.
 
-This image can then be loaded on-the-fly in order for execution. Currently only
-docker-run is supported (i.e. the image is loaded with Skopeo's
-"docker-daemon:" transport), but the plan is to support podman-run (via the
-"containers-storage:" transport) as well.
+This image can then be executed using one of several OCI runtimes:
+- Apptainer: Executes directly from OCI directory (no daemon loading)
+- Singularity: Executes directly from OCI directory (no daemon loading)
+- Podman: Loads to containers-storage, then executes
+- Docker: Loads to docker-daemon, then executes
+
+The runtime is selected via 'datalad.containers-run.oci-runtime' config option,
+which defaults to 'auto' (tries runtimes in the order listed above).
 
 Examples
 --------
@@ -29,8 +33,10 @@ Load the image into the Docker daemon (if necessary) and run a command:
 from collections import namedtuple
 import json
 import logging
+import os
 from pathlib import Path
 import re
+from shutil import which
 import subprocess as sp
 import sys
 
@@ -44,6 +50,109 @@ from datalad_container.adapters.utils import (
 lgr = logging.getLogger("datalad.container.adapters.oci")
 
 _IMAGE_SOURCE_KEY = "org.datalad.container.image.source"
+
+
+def detect_oci_runtime():
+    """Detect which OCI runtime is available.
+
+    Tries runtimes in order: apptainer, singularity, podman, docker
+
+    Returns
+    -------
+    tuple of (str, str) or None
+        (runtime_name, runtime_path) if found, None otherwise.
+        Example: ("apptainer", "/usr/bin/apptainer")
+    """
+    for runtime in ["apptainer", "singularity", "podman", "docker"]:
+        runtime_path = which(runtime)
+        if runtime_path:
+            lgr.debug("Detected OCI runtime: %s at %s", runtime, runtime_path)
+            return (runtime, runtime_path)
+    lgr.debug("No OCI runtime detected")
+    return None
+
+
+def get_oci_runtime(dataset_path=None):
+    """Get OCI runtime from config or auto-detect.
+
+    Reads configuration from 'datalad.containers-run.oci-runtime'.
+    Precedence: Environment variable > Dataset config > User config > auto
+
+    Parameters
+    ----------
+    dataset_path : str or Path, optional
+        Path to dataset to read config from. If None, only reads user-level config.
+
+    Returns
+    -------
+    tuple of (str, str)
+        (runtime_name, runtime_path)
+        Example: ("docker", "/usr/bin/docker")
+
+    Raises
+    ------
+    RuntimeError
+        If no runtime is available or configured runtime is not found.
+    """
+    config_key = "datalad.containers-run.oci-runtime"
+    configured = None
+
+    # Check environment variable first (highest priority)
+    configured = os.environ.get("DATALAD_CONTAINERS_RUN_OCI_RUNTIME")
+    if configured:
+        lgr.debug("Using environment variable: DATALAD_CONTAINERS_RUN_OCI_RUNTIME = %s",
+                 configured)
+    else:
+        # Try dataset-level config second
+        if dataset_path:
+            try:
+                from datalad.api import Dataset
+                ds = Dataset(dataset_path)
+                configured = ds.config.get(config_key, default=None)
+                if configured:
+                    lgr.debug("Using dataset config: %s = %s", config_key, configured)
+            except Exception as exc:
+                lgr.debug("Could not read dataset config: %s", exc)
+
+        # Fall back to user-level config third
+        if configured is None:
+            try:
+                result = sp.run(
+                    ["git", "config", "--get", config_key],
+                    stdout=sp.PIPE, stderr=sp.PIPE,
+                    universal_newlines=True, check=False
+                )
+                if result.returncode == 0:
+                    configured = result.stdout.strip()
+                    lgr.debug("Using user config: %s = %s", config_key, configured)
+            except Exception as exc:
+                lgr.debug("Could not read user config: %s", exc)
+
+    # Default to auto if nothing configured
+    if not configured:
+        configured = "auto"
+        lgr.debug("No config found, using default: auto")
+
+    # Handle 'auto' mode - detect available runtime
+    if configured == "auto":
+        result = detect_oci_runtime()
+        if not result:
+            raise RuntimeError(
+                "No OCI runtime found. Install one of: apptainer, singularity, podman, docker"
+            )
+        lgr.info("Auto-detected OCI runtime: %s", result[0])
+        return result
+
+    # User specified specific runtime - verify it exists
+    runtime_path = which(configured)
+    if not runtime_path:
+        raise RuntimeError(
+            f"Configured OCI runtime '{configured}' not found in PATH. "
+            f"Available runtimes: {', '.join([r for r in ['apptainer', 'singularity', 'podman', 'docker'] if which(r)])}"
+        )
+
+    lgr.info("Using configured OCI runtime: %s", configured)
+    return (configured, runtime_path)
 
 
 def _normalize_reference(reference):
@@ -280,23 +389,122 @@ def get_image_id(path):
     return info["config"]["digest"]
 
 
-def load(path):
-    """Load OCI image from `path`.
+def apptainer_run(image_path, cmd):
+    """Execute command using Apptainer with direct OCI support.
 
-    Currently, the only supported load destination is the Docker daemon.
+    Apptainer can execute directly from OCI directories without loading
+    to a daemon first.
+
+    Parameters
+    ----------
+    image_path : pathlib.Path
+        Path to the OCI image directory
+    cmd : list
+        Command to execute in the container
+    """
+    lgr.debug("Executing with Apptainer from %s", image_path)
+    apptainer_args = [
+        "apptainer", "exec",
+        "--pwd", os.getcwd(),  # Set working directory
+        f"oci:{image_path}",
+    ]
+    apptainer_args.extend(cmd)
+    sp.run(apptainer_args, check=True)
+
+
+def singularity_run(image_path, cmd):
+    """Execute command using Singularity with direct OCI support.
+
+    Singularity can execute directly from OCI directories without loading
+    to a daemon first.
+
+    Parameters
+    ----------
+    image_path : pathlib.Path
+        Path to the OCI image directory
+    cmd : list
+        Command to execute in the container
+    """
+    lgr.debug("Executing with Singularity from %s", image_path)
+    singularity_args = [
+        "singularity", "exec",
+        "--pwd", os.getcwd(),  # Set working directory
+        f"oci:{image_path}",
+    ]
+    singularity_args.extend(cmd)
+    sp.run(singularity_args, check=True)
+
+
+def podman_run(image_id, cmd):
+    """Execute command using Podman.
+
+    Similar to docker_run but uses podman command.
+
+    Parameters
+    ----------
+    image_id : str
+        Container image ID
+    cmd : list
+        Command to execute in the container
+    """
+    lgr.debug("Executing with Podman: %s", image_id)
+
+    podman_args = [
+        "podman", "run",
+        "-v", os.getcwd() + ":/tmp:Z",
+        "-w", "/tmp",
+        "--rm",
+    ]
+
+    # Use Podman's keep-id for proper user namespace mapping (Linux only)
+    # This maps the current user into the container instead of hardcoding UID
+    if sys.platform != "win32":
+        podman_args.extend(["--userns=keep-id"])
+
+    # Add interactive mode
+    podman_args.append("-i")
+
+    # Add the image and command
+    podman_args.extend([image_id] + cmd)
+
+    sp.run(podman_args, check=True)
+
+
+def load(path, runtime="docker"):
+    """Load OCI image from `path` to daemon.
+
+    Loads image to Docker daemon or Podman storage for execution.
+    Apptainer and Singularity do not need this step as they execute directly
+    from OCI directories.
 
     Parameters
     ----------
     path : pathlib.Path
         An OCI-compliant directory such as the one generated by `save`. It must
         contain only one image.
+    runtime : str, optional
+        Runtime to load for: "docker" or "podman". Default is "docker".
 
     Returns
     -------
     An image ID (str)
     """
+    if runtime not in ["docker", "podman"]:
+        raise ValueError(f"load() only supports docker and podman, got: {runtime}")
+
     image_id = get_image_id(path)
-    if image_id not in get_docker_image_ids():
+
+    # Determine the transport based on runtime
+    if runtime == "podman":
+        transport = "containers-storage"
+        # Check if image exists in podman
+        check_cmd = ["podman", "image", "exists", image_id]
+        exists = sp.run(check_cmd, stdout=sp.PIPE, stderr=sp.PIPE).returncode == 0
+    else:  # docker
+        transport = "docker-daemon"
+        exists = image_id in get_docker_image_ids()
+
+    if not exists:
         lgr.debug("Loading %s", image_id)
         # The image is copied with a datalad-container/ prefix to reduce the
         # chance of collisions with existing names registered with the Docker
@@ -320,12 +528,12 @@ def load(path):
             name = re.sub("[^a-z0-9-_.]", "", path.name.lower()[:10])
             tag = image_id.replace(":", "-")[:14]
 
-        lgr.debug("Copying %s to Docker daemon", image_id)
+        lgr.debug("Copying %s to %s", image_id, runtime)
         sp.run(["skopeo", "copy", "oci:" + str(path),
                 # This load happens right before the command executes. Don't
                 # let the output be confused for the command's output.
                 "--quiet",
-                "docker-daemon:datalad-container/{}:{}".format(name, tag)],
+                "{}:datalad-container/{}:{}".format(transport, name, tag)],
                check=True)
     else:
         lgr.debug("Image %s is already present", image_id)
@@ -340,8 +548,45 @@ def cli_save(namespace):
 
 
 def cli_run(namespace):
-    image_id = load(namespace.path)
-    docker_run(image_id, namespace.cmd)
+    """Execute container command using configured or detected runtime.
+
+    Parameters
+    ----------
+    namespace : argparse.Namespace
+        Parsed command-line arguments with 'path' and 'cmd' attributes
+    """
+    # Determine the dataset path (parent of image directory)
+    # This allows dataset-level config to override
+    image_path = namespace.path
+    dataset_path = None
+
+    # Try to find dataset root by looking for .datalad directory
+    current = image_path.resolve().parent
+    while current != current.parent:
+        if (current / ".datalad").is_dir():
+            dataset_path = current
+            lgr.debug("Found dataset at: %s", dataset_path)
+            break
+        current = current.parent
+
+    # Get the configured or detected runtime
+    runtime_name, runtime_path = get_oci_runtime(dataset_path)
+
+    # Execute based on runtime type
+    if runtime_name == "apptainer":
+        apptainer_run(image_path, namespace.cmd)
+    elif runtime_name == "singularity":
+        singularity_run(image_path, namespace.cmd)
+    elif runtime_name == "podman":
+        # Podman needs to load the image first (similar to Docker)
+        image_id = load(image_path, runtime="podman")
+        podman_run(image_id, namespace.cmd)
+    elif runtime_name == "docker":
+        # Docker needs to load the image first
+        image_id = load(image_path, runtime="docker")
+        docker_run(image_id, namespace.cmd)
+    else:
+        raise RuntimeError(f"Unsupported runtime: {runtime_name}")
 
 
 def main(args):

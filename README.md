@@ -8,8 +8,17 @@
 [![Build status](https://ci.appveyor.com/api/projects/status/k4eyq1yygcvwf7wk/branch/master?svg=true)](https://ci.appveyor.com/project/mih/datalad-container/branch/master) [![Travis tests status](https://app.travis-ci.com/datalad/datalad-container.svg?branch=master)](https://app.travis-ci.com/datalad/datalad-container) [![codecov.io](https://codecov.io/github/datalad/datalad-container/coverage.svg?branch=master)](https://codecov.io/github/datalad/datalad-container?branch=master) [![Documentation](https://readthedocs.org/projects/datalad-container/badge/?version=latest)](http://datalad-container.rtfd.org) [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT) [![GitHub release](https://img.shields.io/github/release/datalad/datalad-container.svg)](https://GitHub.com/datalad/datalad-container/releases/) [![PyPI version fury.io](https://badge.fury.io/py/datalad-container.svg)](https://pypi.python.org/pypi/datalad-container/) [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.3368666.svg)](https://doi.org/10.5281/zenodo.3368666) ![Conda](https://anaconda.org/conda-forge/datalad-container/badges/version.svg)
 
 This extension enhances DataLad (http://datalad.org) for working with
-computational containers. Please see the [extension
-documentation](http://datalad-container.rtfd.org)
+computational containers. It supports Singularity/Apptainer containers and
+Docker/OCI images, enabling you to version control containerized
+environments alongside your data and analysis code.
+
+Key features:
+- Track and version container images as dataset objects
+- Execute commands in containers with full provenance tracking
+- Support for multiple container sources: Singularity Hub, Docker Hub, and OCI-compliant registries (quay.io, ghcr.io, gcr.io)
+- Efficient storage and retrieval via git-annex integration
+
+Please see the [extension documentation](http://datalad-container.rtfd.org)
 for a description on additional commands and functionality.
 
 For general information on how to use or contribute to DataLad (and this
@@ -35,6 +44,24 @@ a dedicated [virtualenv](https://virtualenv.pypa.io):
 It is also available for conda package manager from conda-forge:
 
     conda install -c conda-forge datalad-container
+
+### Optional: OCI/Docker Support
+
+For working with OCI-compliant container images (Docker Hub, quay.io, ghcr.io, etc.), install [Skopeo](https://github.com/containers/skopeo):
+
+- **Debian/Ubuntu**: `sudo apt-get install skopeo`
+- **Fedora/RHEL**: `sudo dnf install skopeo`
+- **macOS**: `brew install skopeo`
+- **conda**: `conda install -c conda-forge skopeo`
+
+You'll also need at least one container runtime installed:
+
+- **Apptainer** (recommended for HPC environments)
+- **Singularity**
+- **Podman**
+- **Docker**
+
+The OCI adapter will auto-detect available runtimes. You can configure which runtime to use via `datalad.containers-run.oci-runtime` config option. See the [OCI support documentation](http://docs.datalad.org/projects/container/en/latest/oci-support.html) for details.
 
 
 ## Support

@@ -19,6 +19,7 @@ For an introduction to the general topic and a tutorial, please see the DataLad 
 .. toctree::
    :maxdepth: 1
 
+   oci-support
    changelog
    acknowledgements
    metadata-extraction
@@ -52,5 +53,7 @@ Python API
    containers_run
 
    utils
+   adapters.oci
+   adapters.docker
 
 .. |---| unicode:: U+02014 .. em dash
